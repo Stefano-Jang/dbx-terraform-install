@@ -1,0 +1,62 @@
+# 이 파일을 terraform.tfvars 로 복사해서 값을 채우세요.
+#   cp terraform.tfvars.example terraform.tfvars
+# terraform.tfvars 는 .gitignore 로 커밋에서 제외됩니다(민감정보 보호).
+
+# ----------------------------------------------------------------------
+# 기본 배포 설정
+# ----------------------------------------------------------------------
+region                 = "ap-northeast-2"
+prefix                 = "rnd-root-dbx"              # 리소스 이름 접두어
+cidr_block             = "10.10.0.0/16"
+uc_catalog_bucket_name = "rnd-root-dbx-uc-catalog-root"  # UC root S3 버킷 (전역 고유)
+uc_catalog_name        = "main_rnd_root"             # UC 카탈로그 이름 (언더스코어 사용)
+
+# ----------------------------------------------------------------------
+# 이름 충돌 방지용 랜덤 suffix
+#   true  (기본): prefix / uc_catalog_bucket_name / uc_catalog_name 뒤에
+#                 랜덤 suffix가 붙음 → 여러 SA가 동일 tfvars로 재활용해도 안전
+#   false       : tfvars에 넣은 이름 그대로 설치 (고객 환경 등 "정해진 이름" 필요 시)
+# ----------------------------------------------------------------------
+enable_random_suffix = true
+# random_suffix_length = 6
+
+# ----------------------------------------------------------------------
+# (선택) workspace URL 도메인을 prefix로 지정
+#   Account에 "deployment name prefix"가 먼저 등록돼 있어야 함(Databricks 담당자 요청).
+#   false(기본)면 Databricks가 dbc-xxxxxxxx 형태의 URL을 자동 발급.
+# ----------------------------------------------------------------------
+# set_deployment_name = false
+
+# ----------------------------------------------------------------------
+# (선택) 기존 metastore 재활용
+#   같은 리전에 이미 metastore가 있으면 새로 만들 수 없음("리전당 1개" 제한).
+#   기존 metastore ID를 지정하면 생성하지 않고 워크스페이스에 할당만 함.
+#   확인: databricks account metastores list
+#   ※ 재활용 시에는 enable_random_suffix=true 여야 함(이름 충돌 방지 precondition).
+# ----------------------------------------------------------------------
+# existing_metastore_id = "12a3b4c5-6d7e-8f90-1234-56789abcdef0"
+
+# ----------------------------------------------------------------------
+# Metastore owner / Workspace admin 그룹 자동 구성
+#   설치 직후 admin에는 배포 SP만 들어 있으므로, 아래 값으로 admin 그룹과
+#   사용자를 자동 구성합니다.
+#     - 그룹 이름이 Account에 이미 있으면 채택, 없으면 새로 생성
+#     - members 이메일이 Account에 없으면 사용자 생성 후 그룹에 추가
+#   그룹 이름을 비워두면("") 해당 그룹 자동 구성을 건너뜁니다.
+# ----------------------------------------------------------------------
+# metastore_owner_group   = "metastore_owners"
+# metastore_owner_members = ["alice@example.com", "bob@example.com"]
+# workspace_admin_group   = "workspace_admins"
+# workspace_admin_members = ["alice@example.com", "carol@example.com"]
+
+# ----------------------------------------------------------------------
+# (선택) Zerobus Ingest 사설 인입 PrivateLink (기본 false)
+# ----------------------------------------------------------------------
+# enable_zerobus_privatelink = true
+
+# ----------------------------------------------------------------------
+# 민감정보는 tfvars에 넣지 말고 환경변수로 주입하세요:
+#   export TF_VAR_databricks_account_id="..."
+#   export TF_VAR_databricks_client_id="..."
+#   export TF_VAR_databricks_client_secret="..."
+# ----------------------------------------------------------------------
