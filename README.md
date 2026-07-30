@@ -108,7 +108,7 @@ databricks account metastores list          # 기존 metastore ID 확인
 ```
 
 `terraform.tfvars`에 `existing_metastore_id = "<uuid>"`를 지정하면 새로 만들지 않고
-그 metastore를 워크스페이스에 할당만 합니다. (이 경우 `enable_random_suffix=true` 필수)
+그 metastore를 워크스페이스에 할당만 합니다. (이 경우 이름 중복이 없는게 확실하지 않다면 `enable_random_suffix=true` 필수)
 
 ### Metastore owner / Workspace admin 그룹 자동 구성
 
