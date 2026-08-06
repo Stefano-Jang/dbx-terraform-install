@@ -7,11 +7,11 @@ resource "databricks_metastore" "this" {
   name     = "${local.prefix}-metastore"
   region   = var.region
   # metastore owner = metastore admin. 우선순위:
-  #   1) metastore_owner_group 지정 시 → 해당 그룹(admin_groups.tf에서 생성/채택)
+  #   1) metastore_owner_group 지정 시 → 해당 그룹(admin_groups.tf에서 생성)
   #   2) 아니면 unity_admin_group (하위 호환)
   #   3) 둘 다 비었으면 owner 생략 → metastore를 만든 SP가 자동으로 owner
   # owner는 Account에 실존하는 그룹/사용자/SP여야 합니다. metastore_owner_group을
-  # 쓰면 databricks_group.metastore_owner 가 먼저 생성/채택되므로 안전합니다.
+  # 쓰면 databricks_group.metastore_owner 가 먼저 생성되므로 안전합니다.
   owner = local.manage_metastore_owner_group ? (
     databricks_group.metastore_owner[0].display_name
   ) : (var.unity_admin_group != "" ? var.unity_admin_group : null)

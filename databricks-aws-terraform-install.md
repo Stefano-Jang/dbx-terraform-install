@@ -435,7 +435,7 @@ variable "existing_metastore_id" {
 }
 
 # Metastore owner / Workspace admin 그룹 자동 구성 (6.2.5 admin_groups.tf).
-# 그룹 이름이 Account에 있으면 채택, 없으면 생성. members 이메일이 없으면 생성 후 그룹에 추가.
+# 그룹은 새로 생성(이름에 랜덤 suffix 부착), members 이메일은 Account에서 조회만 합니다.
 # 그룹 이름을 빈 값("")으로 두면 해당 그룹 자동 구성을 건너뜁니다.
 variable "metastore_owner_group" {
   type        = string
@@ -459,6 +459,30 @@ variable "workspace_admin_members" {
   type        = list(string)
   default     = []
   description = "workspace admin 그룹에 넣을 이메일 목록(없으면 사용자 생성 후 추가)"
+}
+
+# ----------------------------------------------------------------------
+# destroy 안전장치 — 사내 공용 Account에서는 기본값(false)을 유지하세요.
+# admin_groups.tf가 다루는 사용자/그룹은 워크스페이스가 아니라 Account 전역 principal이라,
+# Terraform이 소유하면 destroy 시 Account에서 사라집니다. 특히 account-level provider로
+# databricks_user를 소유한 채 destroy하면 provider가 SCIM active=false를 보내 계정 사용자를
+# 비활성화하고, 그 사용자는 모든 워크스페이스에서
+# "Your user account has not been registered." 로 로그인이 막힙니다(6.2.5 참고).
+# ----------------------------------------------------------------------
+variable "create_admin_users" {
+  type    = bool
+  default = false
+  # false(기본, 권장): members 이메일을 data source로 조회만 → destroy가 계정을 안 건드림
+  # true: Terraform이 사용자를 생성/소유 → destroy 시 삭제됨. 사용자가 없는 전용 환경에서만.
+  description = "admin members 사용자를 Terraform이 생성/소유할지 여부(false=조회만, destroy 안전)"
+}
+
+variable "adopt_existing_admin_groups" {
+  type    = bool
+  default = false
+  # false(기본, 권장): 그룹을 새로 생성만 → 동명 공용 그룹을 채택했다가 destroy로 지우는 사고 방지
+  # true: 동명 그룹 채택(force=true). destroy 시 그 그룹이 삭제되므로 전용 그룹일 때만.
+  description = "동명 Account 그룹을 채택(force)할지 여부(false=신규 생성만, destroy 안전)"
 }
 
 # metastore 재할당 후 workspace-scope UC API가 새 metastore를 인식하기까지의 전파 대기.
@@ -590,7 +614,7 @@ enable_random_suffix = true
 # existing_metastore_id = "12a3b4c5-...."
 
 # (선택) Metastore owner / Workspace admin 그룹 자동 구성 (6.2.5 참고)
-#   그룹이 Account에 있으면 채택, 없으면 생성. 이메일이 없으면 사용자 생성 후 그룹에 추가.
+#   그룹은 새로 생성(이름 뒤에 랜덤 suffix 부착). 이메일은 Account에서 조회만(없으면 apply 실패).
 #   그룹 이름을 비우면("") 해당 그룹 자동 구성을 건너뜁니다.
 # metastore_owner_group   = "metastore_owners"
 # metastore_owner_members = ["alice@example.com", "bob@example.com"]
@@ -1187,7 +1211,7 @@ resource "databricks_metastore" "this" {
   name     = "${local.prefix}-metastore"
   region   = var.region
   # metastore owner(=metastore admin). 우선순위:
-  #   1) metastore_owner_group 지정 시 → 해당 그룹(6.2.5 admin_groups.tf에서 생성/채택)
+  #   1) metastore_owner_group 지정 시 → 해당 그룹(6.2.5 admin_groups.tf에서 생성)
   #   2) 아니면 unity_admin_group (하위 호환)
   #   3) 둘 다 비었으면 owner 생략 → metastore를 만든 SP가 자동으로 owner
   # owner는 Account에 실존하는 그룹/사용자/SP여야 합니다.
@@ -1267,57 +1291,104 @@ resource "time_sleep" "metastore_assignment_propagation" {
 비어 있어, 매번 콘솔에서 수동으로 사용자를 admin에 넣어줘야 했습니다. 이 파일은
 `terraform.tfvars`로 받은 **그룹 이름 + 이메일 목록**으로 이 과정을 자동화합니다.
 
+> 🚨 **먼저 알아야 할 것: 여기서 다루는 사용자/그룹은 워크스페이스 소속이 아니라
+> Databricks Account 전역 오브젝트입니다.**
+>
+> 즉 Terraform이 이들을 "소유"하면 **`terraform destroy`가 Account에서 그 사용자/그룹을
+> 없앱니다.** 영향 범위는 이 설치가 만든 워크스페이스가 아니라 **같은 Account의 모든
+> 워크스페이스**입니다. 특히 `databricks_user`를 account-level provider(`databricks.mws`)로
+> 소유한 채 destroy하면, provider는 사용자를 지우는 게 아니라
+> **SCIM `PATCH active=false`로 계정 사용자를 비활성화**합니다
+> (account-level일 때 `disable_as_user_deletion` 기본값이 `true`).
+>
+> 그 결과가 바로 이 증상입니다 — 로그인 시
+> **`Your user account has not been registered.`** 로 차단되고, 원인이 destroy라는 단서가
+> 에러 메시지에 전혀 없습니다. 사내 공용 Account(예: FE sandbox)에서 이걸 하면 자기 계정이
+> 그 Account 전체에서 비활성화됩니다.
+>
+> 그래서 이 구성의 **기본값은 "사용자를 소유하지 않는다"** 입니다.
+> - 사용자: `resource`가 아니라 **`data source`로 조회만** (`create_admin_users = false`)
+> - 그룹: `force = false` (`adopt_existing_admin_groups = false`) — 남의 공용 그룹을 채택했다가
+>   destroy로 지우는 사고를 막습니다. 그룹 이름에는 다른 리소스와 같은 랜덤 suffix가 붙어
+>   재설치 시 충돌하지 않습니다.
+>
+> 이 기본값이면 `apply` / `destroy`를 몇 번 반복해도 계정 사용자는 전혀 건드려지지 않습니다.
+
 ```hcl
 locals {
   # 그룹 이름이 지정된 경우에만 해당 그룹을 관리합니다(빈 값이면 비활성).
   manage_metastore_owner_group = var.metastore_owner_group != ""
   manage_workspace_admin_group = var.workspace_admin_group != ""
 
-  # databricks_user로 생성/채택할 전체 이메일(두 그룹 멤버 합집합, 중복 제거).
+  # 그룹 멤버로 넣을 전체 이메일(두 그룹 멤버 합집합, 중복 제거).
   all_admin_members = toset(concat(
     var.metastore_owner_members,
     var.workspace_admin_members,
   ))
+
+  # 이메일 → Account user ID. 조회 모드/생성 모드 중 실제로 쓰인 쪽에서 가져옵니다.
+  admin_user_ids = var.create_admin_users ? {
+    for email, u in databricks_user.admin : email => u.id
+    } : {
+    for email, u in data.databricks_user.admin : email => u.id
+  }
+
+  # 그룹 이름에도 다른 리소스와 같은 랜덤 suffix를 붙입니다(언더스코어 버전).
+  # 그룹은 Account 전역 네임스페이스이므로, suffix가 없으면 같은 Account에 두 번
+  # 설치할 때 / destroy 직후 재apply할 때 "already exists"로 충돌합니다.
+  metastore_owner_group = "${var.metastore_owner_group}${local.suffix_us}"
+  workspace_admin_group = "${var.workspace_admin_group}${local.suffix_us}"
 }
 
-# 관리 대상 이메일의 Account 사용자.
-# force=true: 이미 Account에 있으면 새로 만들지 않고 채택, 없으면 생성.
-resource "databricks_user" "admin" {
+# [기본 경로] 이미 Account에 있는 사용자를 조회만 합니다.
+# data source이므로 destroy 시 아무 것도 삭제/비활성화하지 않습니다.
+data "databricks_user" "admin" {
   provider  = databricks.mws
-  for_each  = local.all_admin_members
+  for_each  = var.create_admin_users ? toset([]) : local.all_admin_members
   user_name = each.value
-  force     = true
+}
+
+# [옵션 경로] Account에 사용자가 아예 없어서 Terraform이 만들어야 하는 경우.
+# force=false                    → 기존 사용자를 채택하지 않음(남의 계정을 소유하지 않음)
+# disable_as_user_deletion=false → 비활성화가 아니라 삭제(apply/destroy 반복이 멱등)
+resource "databricks_user" "admin" {
+  provider                 = databricks.mws
+  for_each                 = var.create_admin_users ? local.all_admin_members : toset([])
+  user_name                = each.value
+  force                    = false
+  disable_as_user_deletion = false
 }
 
 # Metastore owner 그룹 / Workspace admin 그룹.
-# force=true: Account에 같은 이름 그룹이 있으면 채택, 없으면 생성.
+# force=true(옵션)로 켜면 동명 그룹을 채택하지만, destroy가 그 그룹을 삭제합니다.
 resource "databricks_group" "metastore_owner" {
   count        = local.manage_metastore_owner_group ? 1 : 0
   provider     = databricks.mws
-  display_name = var.metastore_owner_group
-  force        = true
+  display_name = local.metastore_owner_group
+  force        = var.adopt_existing_admin_groups
 }
 
 resource "databricks_group" "workspace_admin" {
   count        = local.manage_workspace_admin_group ? 1 : 0
   provider     = databricks.mws
-  display_name = var.workspace_admin_group
-  force        = true
+  display_name = local.workspace_admin_group
+  force        = var.adopt_existing_admin_groups
 }
 
 # 그룹 멤버십. 나열된 이메일만 추가하며, 그룹에 원래 있던 다른 멤버는 건드리지 않음.
+# destroy 시에는 멤버십(그룹↔사용자 연결)만 끊고 사용자 자체는 남습니다.
 resource "databricks_group_member" "metastore_owner" {
   provider  = databricks.mws
   for_each  = local.manage_metastore_owner_group ? toset(var.metastore_owner_members) : toset([])
   group_id  = databricks_group.metastore_owner[0].id
-  member_id = databricks_user.admin[each.value].id
+  member_id = local.admin_user_ids[each.value]
 }
 
 resource "databricks_group_member" "workspace_admin" {
   provider  = databricks.mws
   for_each  = local.manage_workspace_admin_group ? toset(var.workspace_admin_members) : toset([])
   group_id  = databricks_group.workspace_admin[0].id
-  member_id = databricks_user.admin[each.value].id
+  member_id = local.admin_user_ids[each.value]
 }
 
 # 배포용 SP(=이 Terraform을 실행하는 principal).
@@ -1357,14 +1428,29 @@ workspace_admin_group   = "workspace_admins"
 workspace_admin_members = ["alice@example.com", "carol@example.com"]
 ```
 
-> 🔑 **동작 요약** (실제 destroy→재설치로 검증됨)
-> - 그룹 이름이 Account에 **이미 있으면 채택**, **없으면 생성**합니다(`force=true`).
->   → 같은 이름 그룹이 존재해도 `already exists` 에러 없이 그대로 재사용됩니다.
-> - `*_members`의 이메일이 Account에 **없으면 사용자 생성** 후 그룹에 추가, **있으면 채택**해 추가.
->   그룹에 원래 있던 다른 멤버는 그대로 둡니다.
+> 🔑 **동작 요약**
+> - `*_members`의 이메일은 **Account에서 조회만** 합니다(기본 `create_admin_users = false`).
+>   → 이메일이 Account에 없으면 `cannot find user <email>`로 apply가 실패합니다.
+>     사내 Account는 IdP(SCIM) 연동이라 사용자가 이미 존재하므로 정상 경로입니다.
+> - 그룹은 **새로 생성**만 합니다(기본 `adopt_existing_admin_groups = false`).
+>   이름에 랜덤 suffix가 붙으므로 실제 생성 이름은 `stefano_workspace_admins_a1b2c3` 형태입니다
+>   (`terraform output admin_groups`로 확인).
 > - `metastore_owner_group` → metastore **owner(=metastore admin)** 로 매핑(6.2와 연동).
 > - `workspace_admin_group` → 워크스페이스 **ADMIN 권한**으로 매핑.
 > - 그룹 이름을 빈 값(`""`, 기본)으로 두면 해당 그룹 자동 구성을 건너뜁니다.
+
+**`terraform destroy` 시 무엇이 사라지는가**
+
+| 대상 | 기본 설정에서 destroy 결과 |
+|------|---------------------------|
+| Account 사용자 (`*_members`) | **그대로 유지** (data source로 조회만 했으므로 Terraform이 소유하지 않음) |
+| admin 그룹 | 이 설치가 만든 suffix 붙은 그룹만 삭제 |
+| 그룹 멤버십 | 삭제(사용자는 남고 연결만 끊김) |
+| 워크스페이스 ADMIN 권한 할당 | 삭제 |
+
+두 안전장치를 끄면(`create_admin_users = true`, `adopt_existing_admin_groups = true`)
+destroy가 Account 사용자/그룹까지 지웁니다. **Account에 사용자가 전혀 없는 전용 환경에서만**
+사용하고, 사내 공용 Account에서는 기본값을 유지하세요.
 
 ### 6.3 Storage Credential, External Location & Default Catalog — `uc_catalog.tf`
 
@@ -1620,6 +1706,36 @@ BUCKET=$(terraform output -json resolved_names | jq -r '.uc_catalog_bucket')
 aws s3 rm "s3://${BUCKET}" --recursive --profile aws-rnd-root
 ```
 
+> 🚨 **destroy 후 Databricks 로그인이 `Your user account has not been registered.` 로 막힐 때**
+>
+> **원인:** `admin_groups.tf`의 사용자/그룹은 워크스페이스가 아니라 **Databricks Account 전역**
+> principal입니다. `databricks_user`를 account-level provider로 **소유**한 상태로 destroy하면,
+> provider가 사용자를 지우는 대신 **SCIM `PATCH active=false`로 계정 사용자를 비활성화**합니다
+> (account-level일 때 `disable_as_user_deletion` 기본값 `true`).
+> 비활성화된 사용자는 그 Account의 **모든 워크스페이스**에서 로그인이 거부되고, 에러 메시지에는
+> 원인 단서가 없습니다. 공용 Account(예: FE sandbox `one-env-admin-demo-aws`)에서
+> destroy 한 번이 자기 계정을 Account 전체에서 잠그는 이유가 이것입니다.
+>
+> **예방(현재 기본값):** `create_admin_users = false`(사용자는 조회만) +
+> `adopt_existing_admin_groups = false`(그룹은 신규 생성만). 이 기본값이면
+> `apply`/`destroy`를 반복해도 계정 사용자는 전혀 건드려지지 않습니다(6.2.5 참고).
+>
+> **이미 비활성화됐다면** — Account admin이 사용자를 다시 활성화하면 복구됩니다.
+> Account 콘솔 → **User management → Users**에서 해당 사용자의 **Active** 토글을 켜거나, CLI로:
+> ```bash
+> # 1) 사용자 ID 확인 (active: false 로 표시됨)
+> databricks account users list --profile <account-profile> --output json \
+>   | jq -r '.[] | select(.userName=="me@databricks.com") | {id, userName, active}'
+>
+> # 2) 다시 활성화
+> databricks account users patch <USER_ID> --profile <account-profile> --json '{
+>   "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+>   "Operations": [{"op": "replace", "path": "active", "value": true}]
+> }'
+> ```
+> 사내 공용 Account에서 본인이 Account admin이 아니면 직접 되돌릴 수 없습니다 —
+> 해당 Account의 admin(FE sandbox면 #help-field-eng-sandbox 등)에게 재활성화를 요청하세요.
+
 > ⚠️ **destroy가 subnet/security group에서 `DependencyViolation`으로 멈출 때**
 > (실제 재설치 중 겪은 이슈)
 >
@@ -1656,12 +1772,14 @@ aws s3 rm "s3://${BUCKET}" --recursive --profile aws-rnd-root
 | workspace provider `host` 오류 | 1단계 apply 전 workspace URL 없음 | 7장의 2단계 apply 사용 |
 | Metastore 리전당 1개 제한 | 동일 리전 metastore 이미 존재 | `terraform.tfvars`에 `existing_metastore_id = "<uuid>"` 지정해 재활용(6.2 참고). ID는 `databricks account metastores list`로 확인 |
 | `cannot create mws credentials: Failed credential validation checks` | 방금 만든 cross-account IAM role이 아직 AWS 전역 전파 전 | 4장의 `time_sleep.iam_propagation`으로 대기하지만, 전파가 느리면 드물게 발생 → 잠시 후 재-apply |
-| `cannot create metastore: Could not find principal with name ...` | metastore owner로 지정한 그룹/사용자가 Account에 없음 | `metastore_owner_group`을 쓰면 그룹이 자동 생성/채택되므로 해결(6.2.5 참고). 또는 `unity_admin_group`을 실존 그룹으로 지정하거나 둘 다 비워 생성 SP가 owner가 되게 함(6.2 참고) |
+| `cannot create metastore: Could not find principal with name ...` | metastore owner로 지정한 그룹/사용자가 Account에 없음 | `metastore_owner_group`을 쓰면 그룹이 자동 생성되므로 해결(6.2.5 참고). 또는 `unity_admin_group`을 실존 그룹으로 지정하거나 둘 다 비워 생성 SP가 owner가 되게 함(6.2 참고) |
 | NAT Gateway `Resource.AlreadyAssociated` | 중단된 apply로 EIP가 이미 다른 NAT에 연결됨 | failed NAT 삭제 후 정상 NAT를 `terraform import`, 또는 둘 다 삭제 후 재-apply |
 | destroy 시 `DependencyViolation` (subnet/security group) | 실행 중이던 클러스터의 Databricks 워커 EC2(ENI `databricks_netif`)가 고아로 남아 subnet/SG를 점유 | destroy 전 클러스터 종료. 이미 발생 시 남은 ENI가 붙은 인스턴스를 종료 후 `terraform destroy` 재실행(10장 참고) |
 | 설치는 성공했는데 워크스페이스 카탈로그 목록에 default 카탈로그가 안 보임 | 리전에 metastore가 이미 있어, 재할당 전파 전에 카탈로그가 "리전 기본 metastore"에 잘못 생성됨(레이스) | `time_sleep.metastore_assignment_propagation`(6.2, 기본 60s)으로 방지하지만, 전파가 느리면 발생 → `metastore_assignment_propagation`을 90s 등으로 늘려 재-apply |
 | apply가 `No valid credential sources` / `SSO token has expired`로 즉시 실패 | AWS SSO 세션 만료 | `aws sso login --profile aws-rnd-root`로 세션 갱신 후 재-apply(0.4 참고) |
-| `Group/User already exists` 없이 admin 그룹이 채택됨 | `metastore_owner_group`/`workspace_admin_group`이 Account에 이미 존재 | 정상 동작(오류 아님). `force=true`가 기존 그룹/사용자를 에러 없이 채택(6.2.5 참고) |
+| destroy 후 로그인이 `Your user account has not been registered.` 로 막힘 | account-level provider가 소유한 `databricks_user`를 destroy → SCIM `active=false`로 **계정 사용자 비활성화**(account-level `disable_as_user_deletion` 기본값 `true`). Account 전역이라 모든 워크스페이스에서 차단됨 | Account admin이 해당 사용자를 다시 Active로 전환(10장 참고). 예방은 기본값 유지: `create_admin_users=false`, `adopt_existing_admin_groups=false`(6.2.5 참고) |
+| apply가 `cannot find user <email>` 로 실패 | `create_admin_users=false`(기본)는 사용자를 **조회만** 하는데 그 이메일이 Account에 없음 | 이메일 오타 확인, 또는 Account admin에게 사용자 초대 요청. Account에 사용자가 전혀 없는 전용 환경이면 `create_admin_users=true`로 생성(단, destroy 시 삭제됨 — 6.2.5 참고) |
+| apply가 `Group with name ... already exists` 로 실패 | 그룹 이름이 Account에 이미 존재하는데 `adopt_existing_admin_groups=false`(기본, 안전장치) | `enable_random_suffix=true`(기본)면 suffix로 회피됨. suffix를 끈 경우 그룹 이름을 고유하게 변경. 그 그룹이 이 설치 전용임이 확실하면 `adopt_existing_admin_groups=true`(destroy 시 그룹 삭제됨) |
 
 ## 부록 B. PrivateLink 서비스 엔드포인트 최신값 확인처
 
