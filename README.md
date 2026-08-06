@@ -131,7 +131,7 @@ workspace_admin_members = ["alice@example.com", "carol@example.com"]
   (예: `workspace_admins_a1b2c3`) 같은 Account에 여러 번 설치해도 충돌하지 않습니다.
   실제 이름은 `terraform output admin_groups`로 확인하세요.
 - `*_members`의 이메일은 Account에서 **조회만** 합니다. 없는 이메일이면 apply가 실패합니다
-  (사내 Account는 IdP 연동이라 사용자가 이미 존재합니다).
+  (IdP(SCIM) 연동 Account는 사용자가 이미 존재합니다).
   그룹에 원래 있던 다른 멤버는 건드리지 않습니다.
 - `metastore_owner_group` → metastore **owner(=metastore admin)** 로 매핑됩니다.
   (기존 `unity_admin_group`보다 우선)

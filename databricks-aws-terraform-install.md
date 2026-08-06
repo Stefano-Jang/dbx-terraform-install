@@ -462,7 +462,7 @@ variable "workspace_admin_members" {
 }
 
 # ----------------------------------------------------------------------
-# destroy 안전장치 — 사내 공용 Account에서는 기본값(false)을 유지하세요.
+# destroy 안전장치 — 공용 Account에서는 기본값(false)을 유지하세요.
 # admin_groups.tf가 다루는 사용자/그룹은 워크스페이스가 아니라 Account 전역 principal이라,
 # Terraform이 소유하면 destroy 시 Account에서 사라집니다. 특히 account-level provider로
 # databricks_user를 소유한 채 destroy하면 provider가 SCIM active=false를 보내 계정 사용자를
@@ -1303,7 +1303,7 @@ resource "time_sleep" "metastore_assignment_propagation" {
 >
 > 그 결과가 바로 이 증상입니다 — 로그인 시
 > **`Your user account has not been registered.`** 로 차단되고, 원인이 destroy라는 단서가
-> 에러 메시지에 전혀 없습니다. 사내 공용 Account(예: FE sandbox)에서 이걸 하면 자기 계정이
+> 에러 메시지에 전혀 없습니다. 여러 사람이 함께 쓰는 공용 Account에서 이걸 하면 자기 계정이
 > 그 Account 전체에서 비활성화됩니다.
 >
 > 그래서 이 구성의 **기본값은 "사용자를 소유하지 않는다"** 입니다.
@@ -1431,7 +1431,7 @@ workspace_admin_members = ["alice@example.com", "carol@example.com"]
 > 🔑 **동작 요약**
 > - `*_members`의 이메일은 **Account에서 조회만** 합니다(기본 `create_admin_users = false`).
 >   → 이메일이 Account에 없으면 `cannot find user <email>`로 apply가 실패합니다.
->     사내 Account는 IdP(SCIM) 연동이라 사용자가 이미 존재하므로 정상 경로입니다.
+>     IdP(SCIM) 연동 Account는 사용자가 이미 존재하므로 정상 경로입니다.
 > - 그룹은 **새로 생성**만 합니다(기본 `adopt_existing_admin_groups = false`).
 >   이름에 랜덤 suffix가 붙으므로 실제 생성 이름은 `stefano_workspace_admins_a1b2c3` 형태입니다
 >   (`terraform output admin_groups`로 확인).
@@ -1450,7 +1450,7 @@ workspace_admin_members = ["alice@example.com", "carol@example.com"]
 
 두 안전장치를 끄면(`create_admin_users = true`, `adopt_existing_admin_groups = true`)
 destroy가 Account 사용자/그룹까지 지웁니다. **Account에 사용자가 전혀 없는 전용 환경에서만**
-사용하고, 사내 공용 Account에서는 기본값을 유지하세요.
+사용하고, 공용 Account에서는 기본값을 유지하세요.
 
 ### 6.3 Storage Credential, External Location & Default Catalog — `uc_catalog.tf`
 
@@ -1713,7 +1713,7 @@ aws s3 rm "s3://${BUCKET}" --recursive --profile aws-rnd-root
 > provider가 사용자를 지우는 대신 **SCIM `PATCH active=false`로 계정 사용자를 비활성화**합니다
 > (account-level일 때 `disable_as_user_deletion` 기본값 `true`).
 > 비활성화된 사용자는 그 Account의 **모든 워크스페이스**에서 로그인이 거부되고, 에러 메시지에는
-> 원인 단서가 없습니다. 공용 Account(예: FE sandbox `one-env-admin-demo-aws`)에서
+> 원인 단서가 없습니다. 여러 사람이 함께 쓰는 공용 Account에서
 > destroy 한 번이 자기 계정을 Account 전체에서 잠그는 이유가 이것입니다.
 >
 > **예방(현재 기본값):** `create_admin_users = false`(사용자는 조회만) +
@@ -1725,7 +1725,7 @@ aws s3 rm "s3://${BUCKET}" --recursive --profile aws-rnd-root
 > ```bash
 > # 1) 사용자 ID 확인 (active: false 로 표시됨)
 > databricks account users list --profile <account-profile> --output json \
->   | jq -r '.[] | select(.userName=="me@databricks.com") | {id, userName, active}'
+>   | jq -r '.[] | select(.userName=="<your-email>") | {id, userName, active}'
 >
 > # 2) 다시 활성화
 > databricks account users patch <USER_ID> --profile <account-profile> --json '{
@@ -1733,8 +1733,8 @@ aws s3 rm "s3://${BUCKET}" --recursive --profile aws-rnd-root
 >   "Operations": [{"op": "replace", "path": "active", "value": true}]
 > }'
 > ```
-> 사내 공용 Account에서 본인이 Account admin이 아니면 직접 되돌릴 수 없습니다 —
-> 해당 Account의 admin(FE sandbox면 #help-field-eng-sandbox 등)에게 재활성화를 요청하세요.
+> 공용 Account에서 본인이 Account admin이 아니면 직접 되돌릴 수 없습니다 —
+> 해당 Account의 관리자에게 재활성화를 요청하세요.
 
 > ⚠️ **destroy가 subnet/security group에서 `DependencyViolation`으로 멈출 때**
 > (실제 재설치 중 겪은 이슈)
