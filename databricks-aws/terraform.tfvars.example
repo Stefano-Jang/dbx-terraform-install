@@ -40,14 +40,28 @@ enable_random_suffix = true
 # Metastore owner / Workspace admin 그룹 자동 구성
 #   설치 직후 admin에는 배포 SP만 들어 있으므로, 아래 값으로 admin 그룹과
 #   사용자를 자동 구성합니다.
-#     - 그룹 이름이 Account에 이미 있으면 채택, 없으면 새로 생성
-#     - members 이메일이 Account에 없으면 사용자 생성 후 그룹에 추가
+#     - 그룹은 새로 생성됩니다 (이름 뒤에 랜덤 suffix가 붙음 → 재설치 시 충돌 없음)
+#     - members 이메일은 Account에서 조회만 합니다 (없으면 apply 실패)
 #   그룹 이름을 비워두면("") 해당 그룹 자동 구성을 건너뜁니다.
 # ----------------------------------------------------------------------
 # metastore_owner_group   = "metastore_owners"
 # metastore_owner_members = ["alice@example.com", "bob@example.com"]
 # workspace_admin_group   = "workspace_admins"
 # workspace_admin_members = ["alice@example.com", "carol@example.com"]
+
+# ----------------------------------------------------------------------
+# destroy 안전장치 (기본 false 유지 권장)
+#   admin 사용자/그룹은 워크스페이스가 아니라 Databricks Account 전역 principal입니다.
+#   Terraform이 이들을 소유하면 destroy 시 Account에서 사라집니다. 특히 사용자를
+#   소유한 채 destroy하면 계정이 비활성화되어 그 Account의 모든 워크스페이스에서
+#   "Your user account has not been registered." 로 로그인이 막힙니다.
+#
+#   create_admin_users          = true  → 사용자를 Terraform이 생성/소유 (destroy 시 삭제)
+#   adopt_existing_admin_groups = true  → 동명 기존 그룹 채택 (destroy 시 그 그룹 삭제)
+#   둘 다 "Account에 아무것도 없는 전용 환경"에서만 켜세요.
+# ----------------------------------------------------------------------
+# create_admin_users          = false
+# adopt_existing_admin_groups = false
 
 # ----------------------------------------------------------------------
 # (선택) Zerobus Ingest 사설 인입 PrivateLink (기본 false)

@@ -108,8 +108,8 @@ variable "existing_metastore_id" {
 # ----------------------------------------------------------------------
 # 설치 후 metastore admin / workspace admin에는 배포 SP만 들어 있으므로,
 # 아래 값으로 admin 그룹과 사용자를 자동 구성합니다(admin_groups.tf).
-#   - 그룹 이름이 Account에 이미 있으면 채택, 없으면 새로 생성
-#   - members의 이메일이 없으면 사용자 생성 후 그룹에 추가(force=true)
+#   - 그룹은 새로 생성 (이름 뒤에 랜덤 suffix가 붙어 재설치 시 충돌하지 않음)
+#   - members의 이메일은 Account에서 조회만 (없으면 apply 실패)
 # 그룹 이름을 빈 값("")으로 두면 해당 그룹 자동 구성을 건너뜁니다.
 
 variable "metastore_owner_group" {
@@ -134,6 +134,44 @@ variable "workspace_admin_members" {
   type        = list(string)
   default     = []
   description = "workspace admin 그룹에 넣을 이메일 목록(없으면 사용자 생성 후 추가)"
+}
+
+# ----------------------------------------------------------------------
+# destroy 안전장치 (기본값을 바꾸지 말 것을 권장)
+# ----------------------------------------------------------------------
+# admin_groups.tf가 다루는 사용자/그룹은 워크스페이스가 아니라 **Databricks Account
+# 전체**에 속한 principal입니다. Terraform이 이들을 "소유"하면 destroy 시 Account에서
+# 사라지고, 같은 Account의 다른 워크스페이스까지 영향을 받습니다.
+#
+# 특히 databricks_user 를 account-level provider로 소유한 채 destroy하면
+# provider가 SCIM active=false 를 보내 계정 사용자를 **비활성화**합니다
+# (account-level일 때 disable_as_user_deletion 기본값이 true).
+# 그 결과 해당 사용자는 모든 워크스페이스 로그인에서
+# "Your user account has not been registered." 로 차단됩니다.
+
+variable "create_admin_users" {
+  type    = bool
+  default = false
+  # false (기본, 권장): *_members 이메일을 data source로 **조회만** 합니다.
+  #   → destroy가 계정 사용자를 삭제/비활성화하지 않습니다. apply/destroy 반복 테스트에 안전.
+  #   → 단, 이메일이 Account에 이미 있어야 합니다(사내/IdP 연동 Account는 항상 존재).
+  # true: 사용자를 Terraform이 생성/소유합니다(force=false, disable_as_user_deletion=false).
+  #   → Account에 사용자가 전혀 없는 신규 환경에서만 사용하세요.
+  #     이미 존재하는 이메일이면 "already exists"로 apply가 실패합니다(의도된 안전장치).
+  #   → destroy 시 그 사용자는 Account에서 삭제됩니다.
+  description = "admin *_members 사용자를 Terraform이 생성/소유할지 여부(false=조회만, destroy 안전)"
+}
+
+variable "adopt_existing_admin_groups" {
+  type    = bool
+  default = false
+  # false (기본, 권장): 그룹을 새로 생성만 합니다(force=false).
+  #   → Account에 동명 그룹이 이미 있으면 apply가 실패합니다. 이는 "내가 만들지 않은
+  #     공용 그룹을 채택했다가 destroy로 지워버리는" 사고를 막기 위한 것입니다.
+  #     이 경우 그룹 이름을 SA별로 고유하게 바꾸세요(예: <이름>_ws_admins_rnd).
+  # true: 동명 그룹을 채택합니다(force=true). destroy 시 그 그룹이 삭제되므로,
+  #   그룹이 이 설치 전용임이 확실할 때만 켜세요.
+  description = "동명 Account 그룹을 채택(force)할지 여부(false=신규 생성만, destroy 안전)"
 }
 
 # metastore_assignment 후 workspace-scope UC API가 "새로 할당된 metastore"를 인식하기까지의

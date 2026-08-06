@@ -84,10 +84,12 @@ enable_random_suffix=true 유지하고, 7장의 2단계 apply 순서를 따라�
 | `enable_random_suffix` | `true` | 이름 뒤에 랜덤 suffix를 붙여 **여러 SA 재활용 시 충돌 방지** |
 | `set_deployment_name` | `false` | workspace URL 도메인을 prefix로 지정(Account에 prefix 등록 선행 필요) |
 | `existing_metastore_id` | `""` | 지정 시 기존 metastore 재활용(리전당 1개 제한 회피) |
-| `metastore_owner_group` | `""` | metastore owner(=admin) 그룹 이름. 없으면 생성/있으면 채택 |
-| `metastore_owner_members` | `[]` | metastore owner 그룹에 넣을 이메일 목록 |
-| `workspace_admin_group` | `""` | workspace admin(ADMIN 권한) 그룹 이름. 없으면 생성/있으면 채택 |
-| `workspace_admin_members` | `[]` | workspace admin 그룹에 넣을 이메일 목록 |
+| `metastore_owner_group` | `""` | metastore owner(=admin) 그룹 이름(뒤에 랜덤 suffix 부착) |
+| `metastore_owner_members` | `[]` | metastore owner 그룹에 넣을 이메일 목록(Account에서 조회만) |
+| `workspace_admin_group` | `""` | workspace admin(ADMIN 권한) 그룹 이름(뒤에 랜덤 suffix 부착) |
+| `workspace_admin_members` | `[]` | workspace admin 그룹에 넣을 이메일 목록(Account에서 조회만) |
+| `create_admin_users` | `false` | `true`면 admin 사용자를 Terraform이 생성/소유 → **destroy 시 삭제**. 공용 Account에서는 `false` 유지 |
+| `adopt_existing_admin_groups` | `false` | `true`면 동명 기존 그룹을 채택 → **destroy 시 그 그룹 삭제**. 공용 Account에서는 `false` 유지 |
 | `metastore_assignment_propagation` | `"60s"` | metastore 재할당 후 UC 라우팅 전파 대기(카탈로그 가시성 레이스 방지) |
 | `enable_zerobus_privatelink` | `false` | Zerobus Ingest 사설 인입 PrivateLink 생성 |
 
@@ -125,9 +127,12 @@ workspace_admin_members = ["alice@example.com", "carol@example.com"]
 
 동작:
 
-- 그룹 이름이 Account에 **이미 있으면 채택**하고, **없으면 새로 생성**합니다(`force=true`).
-- `*_members`의 이메일이 Account에 **없으면 사용자를 생성**한 뒤 그룹에 추가하고, **이미 있으면**
-  그대로 채택해 그룹에 추가합니다. 그룹에 원래 있던 다른 멤버는 건드리지 않습니다.
+- 그룹은 **새로 생성**됩니다. 이름 뒤에 다른 리소스와 같은 랜덤 suffix가 붙으므로
+  (예: `workspace_admins_a1b2c3`) 같은 Account에 여러 번 설치해도 충돌하지 않습니다.
+  실제 이름은 `terraform output admin_groups`로 확인하세요.
+- `*_members`의 이메일은 Account에서 **조회만** 합니다. 없는 이메일이면 apply가 실패합니다
+  (IdP(SCIM) 연동 Account는 사용자가 이미 존재합니다).
+  그룹에 원래 있던 다른 멤버는 건드리지 않습니다.
 - `metastore_owner_group` → metastore **owner(=metastore admin)** 로 매핑됩니다.
   (기존 `unity_admin_group`보다 우선)
 - `workspace_admin_group` → 워크스페이스 **ADMIN 권한**(`databricks_mws_permission_assignment`)으로 매핑됩니다.
@@ -135,6 +140,20 @@ workspace_admin_members = ["alice@example.com", "carol@example.com"]
   (SP가 metastore admin 권한을 유지해야 storage credential/external location/catalog를 만들 수 있음)
 
 그룹 이름을 빈 값(`""`, 기본)으로 두면 해당 그룹 자동 구성을 건너뜁니다.
+
+> 🚨 **왜 사용자를 "조회만" 하는가 — destroy가 계정을 잠그는 문제**
+>
+> 이 사용자/그룹은 워크스페이스가 아니라 **Databricks Account 전역** principal입니다.
+> `databricks_user`를 account-level provider로 **소유**한 채 `terraform destroy`를 하면,
+> provider는 사용자를 지우는 대신 **SCIM `active=false`로 계정을 비활성화**합니다
+> (account-level일 때 `disable_as_user_deletion` 기본값이 `true`).
+> 비활성화된 계정은 그 Account의 **모든 워크스페이스**에서
+> `Your user account has not been registered.` 로 로그인이 거부됩니다.
+>
+> 그래서 기본값은 `create_admin_users = false`(조회만) + `adopt_existing_admin_groups = false`
+> (그룹 신규 생성만)입니다. **이 기본값이면 apply/destroy를 몇 번 반복해도 계정은 안전합니다.**
+> 두 값을 `true`로 켜면 destroy가 Account 사용자/그룹까지 삭제하므로,
+> Account에 아무것도 없는 전용 환경에서만 사용하세요.
 
 ### 카탈로그가 올바른 metastore에 붙도록 보장
 
@@ -153,6 +172,19 @@ terraform destroy
 ```
 
 > `existing_metastore_id`로 재활용한 경우 destroy는 metastore를 삭제하지 않고 할당만 해제합니다.
+
+기본 설정에서 destroy가 지우는 것과 남기는 것:
+
+| 대상 | 결과 |
+|------|------|
+| Account 사용자 (`*_members`) | **유지** — data source로 조회만 하므로 Terraform이 소유하지 않음 |
+| admin 그룹 | 이 설치가 만든(suffix 붙은) 그룹만 삭제 |
+| 그룹 멤버십 / 워크스페이스 ADMIN 할당 | 삭제 |
+| VPC·워크스페이스·UC metastore·카탈로그·S3 | 삭제 |
+
+> 이미 destroy로 계정이 비활성화되어 `Your user account has not been registered.` 가 뜬다면,
+> Account admin이 **User management → Users**에서 해당 사용자의 **Active**를 다시 켜면 복구됩니다.
+> CLI 복구 명령은 [상세 가이드 10장](./databricks-aws-terraform-install.md)을 참고하세요.
 
 ## 참고
 
